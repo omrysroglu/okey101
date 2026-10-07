@@ -1,0 +1,12 @@
+{
+  "name": "okey101",
+  "version": "1.0.0",
+  "description": "Arkadaşlarla online oynanan Okey 101 (tek dosyalık HTML, Claude artifact için)",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node tests/rules.test.js",
+    "test:e2e": "npm run build && node tests/e2e.js"
+  },
+  "devDependencies": { "playwright": "^1.45.0" }
+}
