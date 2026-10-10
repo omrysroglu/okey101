@@ -48,7 +48,7 @@ async function discardTile(tid){
   if(!isMyTurn() || S.room.turnPhase!=='discard') return;
   if(mustReturnNow()){ notify('Atıktan aldığın taşla elini açmalısın ya da "Taşı Geri Bırak" ile geri koymalısın.'); render(); return; }
   const room = deepClone(S.room);
-  room.noRetakeSeat=null;
+  room.noRetakeSeat=null; room.turnSnap=null;
   const hand = room.hands[S.mySeat];
   const idx = hand.indexOf(tid);
   if(idx===-1) return;
@@ -178,7 +178,7 @@ async function handleMyTimeout(){
     notes.push(`en küçük taş (${describeTile(room.allTilesById[tid])}) atıldı`);
     pushLog(room, `${myName()}: süre doldu, ${notes.join(', ')}.`);
     pushAlert('Süren doldu: '+notes.join(', ')+'.', 'warn');
-    room.noRetakeSeat=null; if(room.mustOpenSeat===me) room.mustOpenSeat=null;
+    room.noRetakeSeat=null; room.turnSnap=null; if(room.mustOpenSeat===me) room.mustOpenSeat=null;
     S.closeModalOpen=false; S.selectedTid=null;
     if(room.deck.length===0){ scoreRound(room,null,null); await persist(room); return; }
     room.turnSeat=nextSeat(me); room.turnPhase='draw';

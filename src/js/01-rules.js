@@ -116,7 +116,7 @@ function validateGroup(tiles, okeyColor, okeyNumber){
 function validateClose(groupsOfTileObjs, okeyColor, okeyNumber){
   let total=0, tileCount=0, containsOkey=false;
   for(const g of groupsOfTileObjs){
-    const res = validateGroup(g, okeyColor, okeyNumber);
+    const res = validateMeldOrdered(g, okeyColor, okeyNumber);
     if(!res.valid) return {valid:false, reason:res.reason, badGroup:g};
     total+=res.value; tileCount+=g.length;
     if(g.some(t=>isOkey(t,okeyColor,okeyNumber))) containsOkey=true;
@@ -167,31 +167,26 @@ function arrangeMeld(ids, room){
   while(pool.length && lo>1){ lo--; seq.unshift({num:lo,id:pool.pop().id,wild:true}); }
   return {type:'run', ids:seq.map(x=>x.id), color, nums:seq.map(x=>x.num), wildIdx:seq.map((x,i)=>x.wild?i:-1).filter(i=>i>=0)};
 }
-// bir taş verilen pere eklenebilir mi?
-function canExtendMeld(tileId, meldIds, room){
-  const tiles=meldIds.concat([tileId]).map(id=>room.allTilesById[id]);
-  return validateGroup(tiles, room.okeyColor, room.okeyNumber).valid;
-}
+// bir taş verilen pere (uçlarından) eklenebilir mi?
+function canExtendMeld(tileId, meldIds, room){ return !!extendMeldIds(tileId, meldIds, room); }
 // masadaki herhangi bir (seri/set ile açılmış) pere işlenebilir mi?
 function canExtendAnywhere(tileId, room){
   for(const seat of Object.keys(room.table||{})){
     const info=room.opened && room.opened[seat];
     if(!info || info.mode!=='groups') continue;
-    for(const g of room.table[seat]) if(canExtendMeld(tileId,g,room)) return true;
+    for(const g of room.table[seat]) if(g.length>=3 && canExtendMeld(tileId,g,room)) return true;
   }
   return false;
 }
-// perdeki okeyin temsil ettiği gerçek taş elde varsa: okeyin id'sini döndür
+// perdeki okeyin bulunduğu konumdaki gerçek taş elde varsa: okeyin id'sini döndür (sıra korunur)
 function findSwapOkey(tileId, meldIds, room){
   const oc=room.okeyColor, on=room.okeyNumber;
-  const a=arrangeMeld(meldIds, room); if(!a || !a.wildIdx.length) return null;
-  const t=normTile(room.allTilesById[tileId],oc,on);
-  if(isOkey(t,oc,on)) return null;
-  if(a.type==='run'){
-    for(const i of a.wildIdx){ if(t.color===a.color && t.number===a.nums[i]) return a.ids[i]; }
-    return null;
+  if(isOkey(normTile(room.allTilesById[tileId],oc,on),oc,on)) return null;
+  for(let k=0;k<meldIds.length;k++){
+    if(!isOkey(normTile(room.allTilesById[meldIds[k]],oc,on),oc,on)) continue;
+    const r=meldIds.slice(); r[k]=tileId;
+    if(meldInfo(r, room).valid) return meldIds[k];
   }
-  if(a.num!==null && t.number===a.num && !a.colors.includes(t.color)) return a.ids[a.wildIdx[0]];
   return null;
 }
 // eldeki taşlarla (çekilen taş dahil) hemen açılabilir mi? 101 per toplamı ya da çift; en az 1 taş elde kalmalı.
@@ -329,4 +324,67 @@ function bestPairPlan(ids, room){
   const sk=id=>{ const t=T(id); return isOkey(t,oc,on)?999:COLORS.indexOf(t.color)*13+t.number; };
   pairs.sort((a,b)=>sk(a[0])-sk(b[0]));
   return {pairs, leftover:singles.concat(wilds)};
+}
+
+// ---- Sıralı per doğrulama (masaya açma, ıstaka tanıma, işleme) ----
+// Taşların VERİLEN SIRASI önemlidir: seri küçükten büyüğe dizilmeli (9-10-11 geçerli, 9-11-10 geçersiz).
+// Okey bulunduğu konumdaki taşı temsil eder. 1 yalnızca en küçük taştır (12-13-1 geçersiz). Set: aynı sayı, farklı renk, en çok 4.
+function validateMeldOrdered(tiles, okeyColor, okeyNumber){
+  tiles = tiles.map(t=>normTile(t, okeyColor, okeyNumber));
+  const n = tiles.length;
+  if(n<3) return {valid:false, reason:'min3'};
+  const real = tiles.map((t,k)=>({t,k})).filter(x=>!isOkey(x.t, okeyColor, okeyNumber));
+  if(real.length===0) return {valid:false, reason:'no_real'};
+  if(n<=4){
+    const num = real[0].t.number;
+    if(real.every(x=>x.t.number===num) && new Set(real.map(x=>x.t.color)).size===real.length)
+      return {valid:true, type:'set', value:num*n, num};
+  }
+  const color = real[0].t.color, s = real[0].t.number - real[0].k;
+  const sameColor = real.every(x=>x.t.color===color);
+  if(!sameColor) return {valid:false, reason:'no_match'};
+  if(!real.every(x=>x.t.number - x.k === s)) return {valid:false, reason:'order'};
+  if(s<1 || s+n-1>13) return {valid:false, reason:'range'};
+  let value=0; for(let k=0;k<n;k++) value += s+k;
+  return {valid:true, type:'run', value, start:s, color};
+}
+function meldInfo(ids, room){ return validateMeldOrdered(ids.map(id=>room.allTilesById[id]), room.okeyColor, room.okeyNumber); }
+// Neden geçersiz? (kullanıcıya gösterilecek kısa açıklama)
+function meldErrorText(ids, room){
+  const r = meldInfo(ids, room);
+  if(r.valid) return '';
+  if(ids.length<3) return 'Per en az 3 taş olmalı.';
+  if(validateGroup(ids.map(id=>room.allTilesById[id]), room.okeyColor, room.okeyNumber).valid) return 'Seri küçükten büyüğe sıralı olmalı (ör. 9-10-11).';
+  if(r.reason==='range') return 'Seri 1 ile 13 arasında kalmalı (12-13-1 olmaz).';
+  return 'Geçerli bir seri ya da set değil.';
+}
+// Taşı perin uygun ucuna ekler; olmuyorsa null. (Sıra korunur, taş sınırı yok: seri 13'e kadar, set 4 renk)
+function extendMeldIds(tileId, meldIds, room){
+  const a = meldIds.concat([tileId]); if(meldInfo(a, room).valid) return a;
+  const b = [tileId].concat(meldIds); if(meldInfo(b, room).valid) return b;
+  return null;
+}
+// Çiftte okey varsa ve taş okeyin tamamladığı taşla aynıysa okeyin id'si
+function findSwapOkeyPair(tileId, pairIds, room){
+  const oc=room.okeyColor, on=room.okeyNumber, T=id=>normTile(room.allTilesById[id],oc,on);
+  if(isOkey(T(tileId),oc,on) || pairIds.length!==2) return null;
+  for(let k=0;k<2;k++){
+    const w=pairIds[k], other=pairIds[1-k];
+    if(!isOkey(T(w),oc,on) || isOkey(T(other),oc,on)) continue;
+    const a=T(tileId), b=T(other);
+    if(a.color===b.color && a.number===b.number) return w;
+  }
+  return null;
+}
+
+// ---- Çift işleme (seri açan da masadaki çiftlerin yanına yeni çift ekleyebilir) ----
+// Masadaki bir grup çift mi? (çift ile açanın tüm grupları ya da 2 taşlı gruplar)
+function isPairMeld(room, seat, g){ const i=room.opened && room.opened[seat]; return !!((i && i.mode==='pairs') || (g && g.length===2)); }
+// Elde taşın çift eşi: önce aynı taş, yoksa okey. Bulunamazsa null.
+function findPairPartner(tileId, handIds, room){
+  const oc=room.okeyColor, on=room.okeyNumber, T=id=>normTile(room.allTilesById[id],oc,on);
+  const t=T(tileId); if(isOkey(t,oc,on)) return null;
+  const same=handIds.find(id=>id!==tileId && !isOkey(T(id),oc,on) && T(id).color===t.color && T(id).number===t.number);
+  if(same) return same;
+  return handIds.find(id=>id!==tileId && isOkey(T(id),oc,on)) || null;
 }

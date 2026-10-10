@@ -36,7 +36,7 @@ function openPreview(){
     if(S.closeMode==='pairs'){
       if(g.length===2 && validatePairs(tiles, room.okeyColor, room.okeyNumber).valid) total+=1; else bad++;
     } else {
-      const r=validateGroup(tiles, room.okeyColor, room.okeyNumber);
+      const r=meldInfo(g, room);
       if(r.valid) total+=r.value; else bad++;
     }
   }
@@ -53,12 +53,14 @@ async function attemptOpen(){
     for(const g of groupsAsTiles){
       if(myInfo.mode==='pairs'){
         if(g.length!==2 || !validatePairs(g, okeyColor, okeyNumber).valid){ S.closeError='Geçersiz çift var.'; render(); return; }
-      } else if(!validateGroup(g, okeyColor, okeyNumber).valid){ S.closeError='Gruplardan biri geçerli bir per (seri/set) değil.'; render(); return; }
+      }
     }
+    if(myInfo.mode!=='pairs'){ const bad=S.groups.find(g=>!meldInfo(g,room).valid); if(bad){ S.closeError=meldErrorText(bad,room); render(); return; } }
     const r3=deepClone(room);
+    ensureTurnSnap(r3);
     const used3=new Set(S.groups.flat());
     r3.hands[S.mySeat]=r3.hands[S.mySeat].filter(id=>!used3.has(id));
-    const added=S.groups.map(g=>{ if(myInfo.mode==='pairs') return g.slice(); const a=arrangeMeld(g,r3); return a?a.ids:g.slice(); });
+    const added=S.groups.map(g=>g.slice());   // sıra oyuncunun dizdiği gibi kalır
     r3.table[S.mySeat]=(r3.table[S.mySeat]||[]).concat(added);
     if(myInfo.mode==='pairs') r3.opened[S.mySeat].pairCount=(r3.opened[S.mySeat].pairCount||0)+added.length;
     pushLog(r3, `${myName()} masaya ${added.length} yeni per indirdi.`);
@@ -75,16 +77,17 @@ async function attemptOpen(){
     info={mode:'pairs', pairCount:S.groups.length, meldValue:0, containsOkey:groupsAsTiles.some(g=>g.some(t=>isOkey(t,okeyColor,okeyNumber)))};
   } else {
     const res=validateClose(groupsAsTiles, okeyColor, okeyNumber);
-    if(!res.valid){ S.closeError='Gruplardan biri geçerli bir per (seri/set) değil.'; render(); return; }
+    if(!res.valid){ const bad=S.groups.find(g=>!meldInfo(g,room).valid); S.closeError=bad?meldErrorText(bad,room):'Gruplardan biri geçerli bir per değil.'; render(); return; }
     if(res.meldValue<OPEN_MIN){ S.closeError=`Açmak için perlerin toplamı en az ${OPEN_MIN} olmalı (şu an ${res.meldValue}).`; render(); return; }
     info={mode:'groups', meldValue:res.meldValue, pairCount:null, containsOkey:res.containsOkey};
   }
   const r2=deepClone(room);
+  ensureTurnSnap(r2);
   const used=new Set(S.groups.flat());
   r2.hands[S.mySeat]=r2.hands[S.mySeat].filter(id=>!used.has(id));
   r2.table = r2.table || {0:[],1:[],2:[],3:[]};
   r2.opened = r2.opened || {0:null,1:null,2:null,3:null};
-  r2.table[S.mySeat]=S.groups.map(g=>{ if(info.mode==='pairs') return g.slice(); const a=arrangeMeld(g,r2); return a?a.ids:g.slice(); });
+  r2.table[S.mySeat]=S.groups.map(g=>g.slice());   // sıra oyuncunun dizdiği gibi kalır
   r2.opened[S.mySeat]=info;
   if(r2.mustOpenSeat===S.mySeat) r2.mustOpenSeat=null;
   pushLog(r2, `${myName()} perlerini açtı (${info.mode==='pairs'? info.pairCount+' çift' : info.meldValue+' puan'}).`);
@@ -137,7 +140,7 @@ async function attemptClose(){
   if(S.ungrouped.length>0){ S.closeError='Elindeki tüm taşları gruplara yerleştirmelisin.'; render(); return; }
   const groupsAsTiles = S.groups.map(g=>g.map(id=>room.allTilesById[id]));
   const res = validateClose(groupsAsTiles, okeyColor, okeyNumber);
-  if(!res.valid){ S.closeError='Gruplardan biri geçerli bir per (seri/set) değil.'; render(); return; }
+  if(!res.valid){ const bad=S.groups.find(g=>!meldInfo(g,room).valid); S.closeError=bad?meldErrorText(bad,room):'Gruplardan biri geçerli bir per değil.'; render(); return; }
   if(res.tileCount !== room.hands[S.mySeat].length){ S.closeError='Taş sayısı tutmuyor.'; render(); return; }
   await finalizeClose({mode:'groups', meldValue:res.meldValue});
 }
@@ -155,19 +158,19 @@ function scoreRound(room, winnerSeat, meldInfo){
   const n = room.players.length;
   const breakdown = {};
   for(let s=0;s<n;s++) breakdown[s]=[];
-  const addDelta = (seat, amount, label)=>{ breakdown[seat].push({label, amount}); };
+  const addDelta = (seat, amount, label, cat)=>{ breakdown[seat].push({label, amount, cat:cat||'diger'}); };
   const hasWinner = winnerSeat!==null && winnerSeat!==undefined;
 
   if(hasWinner){
-    addDelta(winnerSeat, -100, 'Eli bitirme bonusu');
-    if(meldInfo.lastOkey) addDelta(winnerSeat, -100, 'Okey atarak bitirme bonusu');
+    addDelta(winnerSeat, -100, 'Eli bitirme bonusu', 'bonus');
+    if(meldInfo.lastOkey) addDelta(winnerSeat, -100, 'Okey atarak bitirme bonusu', 'bonus');
     if(meldInfo.mode==='groups'){
-      if(meldInfo.meldValue>60) addDelta(winnerSeat, -200, '60 üstü açılış bonusu (x2)');
-      else if(meldInfo.meldValue>50) addDelta(winnerSeat, -100, '50 üstü açılış bonusu');
+      if(meldInfo.meldValue>60) addDelta(winnerSeat, -200, '60 üstü açılış bonusu (x2)', 'bonus');
+      else if(meldInfo.meldValue>50) addDelta(winnerSeat, -100, '50 üstü açılış bonusu', 'bonus');
     }
     if(meldInfo.mode==='pairs'){
-      if(meldInfo.pairCount>=9) addDelta(winnerSeat, -200, `${meldInfo.pairCount} çift açılış bonusu (x2)`);
-      else if(meldInfo.pairCount>=7) addDelta(winnerSeat, -100, `${meldInfo.pairCount} çift açılış bonusu`);
+      if(meldInfo.pairCount>=9) addDelta(winnerSeat, -200, `${meldInfo.pairCount} çift açılış bonusu (x2)`, 'bonus');
+      else if(meldInfo.pairCount>=7) addDelta(winnerSeat, -100, `${meldInfo.pairCount} çift açılış bonusu`, 'bonus');
     }
   }
 
@@ -177,19 +180,19 @@ function scoreRound(room, winnerSeat, meldInfo){
     const faceVal = t.fake ? okeyNumber : t.number;
     let takerAmt = -faceVal, discAmt = faceVal;
     if(hasWinner && meldInfo.mode==='pairs' && ev.takerSeat===winnerSeat){ takerAmt*=2; discAmt*=2; }
-    addDelta(ev.takerSeat, takerAmt, `Atıktan taş alma bonusu (${describeTile(t)})`);
-    addDelta(ev.fromSeat, discAmt, `Atılan taş alındı cezası (${describeTile(t)})`);
+    addDelta(ev.takerSeat, takerAmt, `Atıktan taş alma bonusu (${describeTile(t)})`, 'alma');
+    addDelta(ev.fromSeat, discAmt, `Atılan taş alındı cezası (${describeTile(t)})`, 'alma');
   }
 
   // +101 ceza durumları ve perdesinden okey alınması
-  for(const p of (room.penalties||[])) addDelta(p.seat, p.amount, p.label);
+  for(const p of (room.penalties||[])) addDelta(p.seat, p.amount, p.label, 'ceza');
 
   // elde kalan taşlar: açamayan direkt +200, açmış olan elindeki taşların toplamı
   for(let s=0;s<n;s++){
     if(hasWinner && s===winnerSeat) continue;
-    if(!(room.opened && room.opened[s])){ addDelta(s, NOT_OPENED_PENALTY, 'Açamadı cezası'); continue; }
+    if(!(room.opened && room.opened[s])){ addDelta(s, NOT_OPENED_PENALTY, 'Açamadı cezası', 'acamadi'); continue; }
     const sum = room.hands[s].map(id=>room.allTilesById[id]).reduce((acc,t)=>acc+tileValue(t, okeyColor, okeyNumber), 0);
-    if(sum>0) addDelta(s, sum, 'Elde kalan taş puanı');
+    if(sum>0) addDelta(s, sum, 'Elde kalan taş puanı', 'kalan');
   }
 
   const deltaTotals = {};
@@ -203,43 +206,135 @@ function scoreRound(room, winnerSeat, meldInfo){
     meldMode: meldInfo?meldInfo.mode:null,
     meldValue:(meldInfo&&meldInfo.meldValue)||0, pairCount:(meldInfo&&meldInfo.pairCount)||null,
   };
+  // puan tablosu için el geçmişi
+  room.history = room.history || [];
+  room.history.push({
+    round: room.round||1, winnerSeat: hasWinner?winnerSeat:null, deckEnd: !hasWinner,
+    rows: Array.from({length:n},(_,s)=>({
+      seat:s, delta:deltaTotals[s], total:room.scores[s], items:breakdown[s],
+      tiles:(room.hands[s]||[]).length,
+      handValue:(room.hands[s]||[]).map(id=>room.allTilesById[id]).reduce((a,t)=>a+tileValue(t,okeyColor,okeyNumber),0),
+      opened: (room.opened && room.opened[s]) ? {mode:room.opened[s].mode, value:openedSummaryValue(room,s)} : null,
+      manual:0,
+    })),
+  });
+  room.turnSnap=null;
   room.status='roundEnd';
   room.mustOpenSeat=null;
   pushLog(room, hasWinner ? `${seatName(room,winnerSeat)} eli bitirdi.` : 'Deste bitti, el kimse bitiremeden sona erdi.');
 }
 
-// işleme / okey değişimi: seçili taşı masadaki bir pere işle
+// ---- Tur içi anlık görüntü: bu turda açılan/indirilen perler ✕ ile geri alınabilsin ----
+function ensureTurnSnap(room){
+  const me=S.mySeat;
+  if(room.turnSnap && room.turnSnap.seat===me) return;
+  room.turnSnap={seat:me, hand:room.hands[me].slice(), table:deepClone(room.table||{0:[],1:[],2:[],3:[]}),
+    opened:deepClone(room.opened||{0:null,1:null,2:null,3:null}), penalties:deepClone(room.penalties||[]),
+    mustOpenSeat:(room.mustOpenSeat===undefined?null:room.mustOpenSeat)};
+}
+function laidThisTurn(room, seat, gi){
+  const sn=room.turnSnap;
+  return !!(sn && sn.seat===seat && seat===S.mySeat && gi >= ((sn.table && sn.table[seat]) || []).length);
+}
+async function takeBackMeld(gi){
+  if(!canDiscardNow()) return;
+  const r0=S.room, me=S.mySeat;
+  if(!laidThisTurn(r0, me, gi)) return;
+  const room=deepClone(r0), sn=room.turnSnap, info=room.opened[me];
+  const rest=room.table[me].filter((_,i)=>i!==gi);
+  const openedThisTurn=!(sn.opened && sn.opened[me]);
+  let full=false;
+  if(openedThisTurn){
+    full = info.mode==='pairs' ? rest.length<OPEN_MIN_PAIRS : rest.reduce((a,g)=>a+(meldInfo(g,room).value||0),0)<OPEN_MIN;
+  }
+  if(full || rest.length===0){
+    room.hands[me]=sn.hand.slice(); room.table=sn.table; room.opened=sn.opened; room.penalties=sn.penalties;
+    room.mustOpenSeat=sn.mustOpenSeat; room.turnSnap=null;
+    pushLog(room, `${myName()} bu turdaki açışını geri aldı.`);
+    notify(openedThisTurn ? 'Açış geri alındı: kalan perler açmaya yetmiyordu, bu turdaki tüm perler ıstakana döndü.' : 'Bu turda indirdiğin perler ıstakana döndü.');
+  } else {
+    const g=room.table[me][gi];
+    room.table[me]=rest; room.hands[me]=room.hands[me].concat(g);
+    if(info.mode==='pairs') info.pairCount=rest.length;
+    else if(openedThisTurn) info.meldValue=rest.reduce((a,x)=>a+(meldInfo(x,room).value||0),0);
+    pushLog(room, `${myName()} bir peri geri aldı.`);
+  }
+  S.selectedTid=null;
+  await persist(room);
+}
+
+// İşleme: seçili/sürüklenen taşı masadaki bir pere işle.
+// Kurallar: açmış her oyuncu (seri ya da çift açmış) seri/set perlere uçlardan taş işleyebilir ve perdeki okeyi gerçek taşla değiştirebilir.
+// Çiftler büyütülemez; çiftte okey varsa aynı taşı koyup okeyi almak (işleme) mümkündür.
 async function meldClick(seat, gi, tidArg){
   if(!canDiscardNow()) return;
   const me=S.mySeat, r0=S.room;
   const mi=r0.opened && r0.opened[me];
-  if(!mi){ notify('İşlemek için önce perlerini açmalısın.'); return; }
-  if(mi.mode!=='groups'){ notify('Çift ile açanlar perlere taş işleyemez.'); return; }
+  if(!mi){ notify('İşlemek için önce elini açmalısın.'); return; }
   const oi=r0.opened[seat];
-  if(!oi || oi.mode!=='groups'){ notify('Çiftlere taş işlenemez.'); return; }
+  if(!oi){ notify('Bu per işlenemez.'); return; }
   const tid=tidArg||S.selectedTid;
   if(!tid || !r0.hands[me].includes(tid)){ notify('Önce ıstakandan işlenecek taşı seç, sonra pere tıkla ya da taşı pere sürükle.'); return; }
   if(r0.hands[me].length<2){ notify('Atmak için elinde en az 1 taş kalmalı.'); return; }
   const room=deepClone(r0);
   const meld=room.table[seat][gi];
-  const swapId=findSwapOkey(tid, meld, room);
   const hand=room.hands[me];
+  const T=id=>describeTile(room.allTilesById[id]);
+  let swapId=null;
+  if(isPairMeld(room, seat, meld)){
+    swapId=findSwapOkeyPair(tid, meld, room);
+    if(!swapId) return workPair(tid);   // çifte taş eklenmez; eşiyle birlikte yeni çift olarak işlenir
+  } else {
+    swapId=findSwapOkey(tid, meld, room);
+  }
+  ensureTurnSnap(room);
   if(swapId){
-    const k=meld.indexOf(swapId);
-    meld[k]=tid;
+    meld[meld.indexOf(swapId)]=tid;
     hand.splice(hand.indexOf(tid),1);
     hand.push(swapId);
-    const a=arrangeMeld(meld, room); if(a) room.table[seat][gi]=a.ids;
-    pushLog(room, `${myName()}, ${seatName(room,seat)} oyuncusunun perindeki okeyi ${describeTile(room.allTilesById[tid])} ile değiştirip aldı.`);
+    pushLog(room, `${myName()}, ${seatName(room,seat)} oyuncusunun perindeki okeyi ${T(tid)} ile değiştirip aldı.`);
     if(seat!==me){ addPenalty(room, seat, 101, 'Perinden okey alındı'); pushLog(room, `${seatName(room,seat)}: perinden okey alındı, +101 ceza.`); }
-  } else if(canExtendMeld(tid, meld, room)){
+  } else {
+    const ext=extendMeldIds(tid, meld, room);
+    if(!ext){ notify('Bu taş o pere işlenemez: seriye sıralı olarak bir uca, sete eksik renk olarak eklenmeli.'); return; }
     hand.splice(hand.indexOf(tid),1);
-    const a=arrangeMeld(meld.concat([tid]), room);
-    room.table[seat][gi]=a.ids;
-    pushLog(room, `${myName()}, ${seatName(room,seat)} oyuncusunun perine ${describeTile(room.allTilesById[tid])} taşını işledi.`);
-  } else { notify('Bu taş o pere işlenemez.'); return; }
+    room.table[seat][gi]=ext;
+    pushLog(room, `${myName()}, ${seatName(room,seat)} oyuncusunun perine ${T(tid)} taşını işledi.`);
+  }
   S.selectedTid=null; S.selectedIdx=null;
   await persist(room);
+}
+
+// Çift işleme: taşı elindeki eşiyle (yoksa okeyle) masaya yeni çift olarak indirir.
+// Çift açan her zaman, seri açan ise masada açılmış çift varsa yapabilir.
+function canWorkPairs(room, me){
+  const mi=room.opened && room.opened[me]; if(!mi) return false;
+  if(mi.mode==='pairs') return true;
+  return Object.keys(room.table||{}).some(s=>(room.table[s]||[]).some(g=>isPairMeld(room, +s, g)));
+}
+async function workPair(tidArg){
+  if(!canDiscardNow()) return;
+  const me=S.mySeat, r0=S.room;
+  if(!(r0.opened && r0.opened[me])){ notify('İşlemek için önce elini açmalısın.'); return; }
+  if(!canWorkPairs(r0, me)){ notify('Masada açılmış çift yok; çift işlenemez.'); return; }
+  const tid=tidArg||S.selectedTid;
+  if(!tid || !r0.hands[me].includes(tid)){ notify('Önce ıstakandan taş seç, sonra çift alanına tıkla ya da taşı oraya sürükle.'); return; }
+  const partner=findPairPartner(tid, r0.hands[me], r0);
+  if(!partner){ notify('Bu taşın elinde eşi (ya da okey) yok; çift işlenemez.'); return; }
+  if(r0.hands[me].length<3){ notify('Atmak için elinde en az 1 taş kalmalı.'); return; }
+  const room=deepClone(r0);
+  ensureTurnSnap(room);
+  const hand=room.hands[me];
+  [tid,partner].forEach(id=>hand.splice(hand.indexOf(id),1));
+  room.table[me]=(room.table[me]||[]).concat([[tid,partner]]);
+  if(room.opened[me].mode==='pairs') room.opened[me].pairCount=(room.opened[me].pairCount||0)+1;
+  pushLog(room, `${myName()} masaya çift işledi: ${describeTile(room.allTilesById[tid])}.`);
+  S.selectedTid=null; S.selectedIdx=null;
+  await persist(room);
+}
+function pairZoneClick(ev){
+  if(ev.target.closest('.meld') || !S.selectedTid) return;
+  workPair(S.selectedTid);
 }
 
 async function startNextRound(){
@@ -260,7 +355,7 @@ async function startNextRound(){
   room.turnSeat = newDealer;
   room.turnPhase='discard';   // başlayan 22 taşla başlar, önce taş atar
   room.turnDeadline = room.turnSeconds ? Date.now()+room.turnSeconds*1000 : null;
-  room.takeEvents=[]; room.penalties=[]; room.mustOpenSeat=null; room.table={0:[],1:[],2:[],3:[]}; room.opened={0:null,1:null,2:null,3:null};
+  room.takeEvents=[]; room.penalties=[]; room.mustOpenSeat=null; room.turnSnap=null; room.table={0:[],1:[],2:[],3:[]}; room.opened={0:null,1:null,2:null,3:null};
   room.roundResult=null;
   pushLog(room, `El ${room.round} başladı. Gösterge: ${describeTile(room.allTilesById[room.indicatorTileId])}`);
   await persist(room);
@@ -278,8 +373,18 @@ async function applyManualAdjustment(){
   if(isNaN(seat) || isNaN(amt)) return;
   const room = deepClone(S.room);
   room.scores[seat] = (room.scores[seat]||0) + amt;
+  const last=(room.history||[])[room.history?room.history.length-1:0];
+  if(last && last.rows[seat]){ last.rows[seat].manual=(last.rows[seat].manual||0)+amt; last.rows[seat].total=room.scores[seat]; }
   pushLog(room, `Manuel düzeltme: ${seatName(room,seat)} ${amt>0?'+':''}${amt} puan (${S.adjustNote||'not yok'})`);
   S.adjustSeat=null; S.adjustAmount=''; S.adjustNote='';
   await persist(room);
 }
 
+
+// Masadaki perlerin anlık değeri (seri/set: toplam sayı, çift: çift sayısı)
+function openedSummaryValue(room, seat){
+  const info=room.opened && room.opened[seat]; if(!info) return 0;
+  const groups=(room.table && room.table[seat]) || [];
+  if(info.mode==='pairs') return groups.length;
+  return groups.reduce((a,g)=>a+(meldInfo(g,room).value||0),0);
+}

@@ -28,6 +28,7 @@ let S = {
   busy:false,
   notice:'', noticeUntil:0,
   alerts:[], penKey:null, penSeen:0,
+  scoreboardOpen:false, sbRound:null,
 };
 
 let pollHandle=null;

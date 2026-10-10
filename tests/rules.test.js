@@ -58,6 +58,32 @@ ok(rm.scores[2]===-200,'win + okey finish = -200 (meld 40)');
   const pp=bestPairPlan([id('red',1,0),id('red',1,1),id('blue',2,0),id('blue',2,1),id('black',5),id('yellow',12),id('red',9)],rq);
   ok(pp.pairs.length===3 && pp.leftover.length===1,'pair plan okeyle çift tamamlar');
 }
+// Sıralı per, işleme, çift okey değişimi, puan geçmişi
+{ const rq={okeyColor:'black',okeyNumber:7,allTilesById:byId};
+  const v=a=>meldInfo(a,rq).valid;
+  ok(v([id('red',9),id('red',10),id('red',11)]) && !v([id('red',9),id('red',11),id('red',10)]) && !v([id('red',11),id('red',10),id('red',9)]),'seri artan sırada olmalı');
+  ok(!v([id('red',12),id('red',13),id('red',1)]),'12-13-1 geçersiz');
+  ok(meldInfo([id('red',2),id('red',3),id('red',4),id('black',7)],rq).value===14,'okey bulunduğu yeri temsil eder (2-3-4-okey=5)');
+  const long=[id('red',5),id('red',6),id('red',7),id('red',8),id('red',9)];
+  ok(extendMeldIds(id('red',10),long,rq).length===6 && extendMeldIds(id('red',4),long,rq)[0]===id('red',4),'4 taştan uzun seriye iki uçtan işleme');
+  ok(!extendMeldIds(id('red',12),long,rq),'aradan taş işlenemez');
+  ok(findSwapOkey(id('red',6),[id('red',5),id('black',7),id('red',7)],rq)===id('black',7),'seride okey değişimi');
+  ok(findSwapOkeyPair(id('blue',3,1),[id('blue',3,0),id('black',7)],rq)===id('black',7) && !findSwapOkeyPair(id('blue',4),[id('blue',3,0),id('black',7)],rq),'çiftte okey değişimi');
+  const b2=JSON.parse(JSON.stringify(base)); b2.opened={0:null,1:{mode:'groups',meldValue:101},2:null,3:null}; b2.table={0:[],1:[[id('red',9),id('red',10),id('red',11)]],2:[],3:[]}; b2.round=1;
+  scoreRound(b2,null,null);
+  const h=b2.history[0];
+  ok(h && h.rows.length===4 && h.rows[1].opened.value===30 && h.rows[0].items.some(x=>x.cat==='acamadi') && h.rows[1].items.some(x=>x.cat==='ceza'),'puan geçmişi kaydedilir');
+}
 console.log(fails?'FAILS '+fails:'ALL PASS');
+
+// Çift işleme yardımcıları
+{ const rq={okeyColor:'yellow',okeyNumber:12,allTilesById:byId,opened:{0:{mode:'groups'},1:{mode:'pairs'}},table:{0:[[id('red',3),id('red',4),id('red',5)]],1:[[id('blue',7,0),id('blue',7,1)]]}};
+  ok(isPairMeld(rq,1,rq.table[1][0]) && !isPairMeld(rq,0,rq.table[0][0]),'çift tanıma');
+  ok(findPairPartner(id('black',9,0),[id('black',9,0),id('black',9,1),id('yellow',12)],rq)===id('black',9,1),'eş: aynı taş öncelikli');
+  ok(findPairPartner(id('black',9,0),[id('black',9,0),id('yellow',12)],rq)===id('yellow',12),'eş yoksa okey');
+  const rq2={...rq, table:{0:[[id('red',7),id('yellow',12)]]}, opened:{0:{mode:'groups'}}};
+  ok(!canExtendAnywhere(id('blue',7),rq2),'2 taşlı çift büyütülemez (ceza hesabı dahil)');
+}
+console.log(fails?'FAILS '+fails:'ALL PASS (çift işleme)');
 
 process.exit(fails?1:0);

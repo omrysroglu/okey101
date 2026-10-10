@@ -3,6 +3,11 @@ function tileHTML(tile, opts){
   opts = opts||{};
   const cls = ['tile']; if(opts.small) cls.push('small'); if(opts.mini) cls.push('mini'); if(opts.selected) cls.push('selected'); if(tile.fake) cls.push('fake'); if(opts.cls) cls.push(opts.cls);
   const clickAttr = (opts.onclick ? `onclick="${opts.onclick}"` : '') + (opts.attrs ? ' '+opts.attrs : '');
+  if(opts.flipped){
+    return `<div class="${cls.join(' ')} flipped" ${clickAttr} title="Okey (ters çevrildi, açmak için tıkla)">
+      <span class="flip-star">★</span><span class="flip-lbl">OKEY</span>
+    </div>`;
+  }
   if(tile.fake){
     return `<div class="${cls.join(' ')}" ${clickAttr} title="Sahte Okey">
       <svg viewBox="0 0 24 24" aria-hidden="true" style="width:62%;height:auto;margin-top:6%"><path d="M12 2.5l2.9 6 6.6.9-4.8 4.6 1.2 6.5L12 17.4l-5.9 3.1 1.2-6.5L2.5 9.4l6.6-.9z" fill="#1F1F1F"/></svg>
@@ -23,6 +28,7 @@ function render(){
   else if(S.screen==='lobby') app.innerHTML = renderLobby();
   else if(S.screen==='game') app.innerHTML = renderGame();
   if(S.closeModalOpen) app.innerHTML += renderCloseModal();
+  if(S.scoreboardOpen && S.screen==='game') app.innerHTML += renderScoreboard();
   if(S.screen==='game'){ checkPenaltyAlerts(); app.innerHTML += alertsHTML(); }
 }
 
@@ -121,7 +127,7 @@ function nameplateHTML(room, seat, vertical, extra){
     <div class="avatar">${escapeHtml((nm||'?').trim().charAt(0).toUpperCase())}</div>
     <div class="np-meta">
       <div class="nm" title="${escapeAttr(nm)}">${escapeHtml(nm)}${seat===room.dealerSeat?' <span class="badge">D</span>':''}</div>
-      <span class="score-bubble" title="Toplam puan">${room.scores[seat]}</span>${extra||''}
+      <span class="score-bubble" title="Toplam puan">${room.scores[seat]}</span>${openedBadgeHTML(room, seat)}${extra||''}
     </div>
   </div>`;
 }
@@ -151,23 +157,85 @@ function laneHTML(room, seat){
 }
 
 // Masa: solda seri/set perler (dikey sıralar), sağda çiftler. İsim yok.
+// Açmış her oyuncu seri/set perlere işleyebilir; çiftlere yalnızca okey değişimi yapılabilir. Bu turda indirilen perlerde ✕ ile geri alma.
 function meldsAreaHTML(room, seats){
   const myInfo = room.opened && room.opened[S.mySeat];
-  const canWork = canDiscardNow() && myInfo && myInfo.mode==='groups';
+  const canWork = canDiscardNow() && !!myInfo;
   const runs=[], pairs=[];
   seats.forEach(seat=>{
     const info=room.opened && room.opened[seat];
     const groups=(room.table && room.table[seat]) || [];
     groups.forEach((g,gi)=>{
-      const isPair = info && info.mode==='pairs';
-      const work = !isPair && canWork;
-      const html = `<div class="meld ${work?'workable':''} ${seat===S.mySeat?'mine':''}" ${isPair?'':`data-seat="${seat}" data-gi="${gi}"`} ${work?`onclick="meldClick(${seat},${gi})" title="Seçili taşı bu pere işle"`:''}>${g.map(tid=>tileHTML(room.allTilesById[tid],{mini:true})).join('')}</div>`;
+      const isPair = isPairMeld(room, seat, g);
+      const undo = canDiscardNow() && laidThisTurn(room, seat, gi);
+      const html = `<div class="meld ${canWork?'workable':''} ${seat===S.mySeat?'mine':''} ${undo?'fresh':''}" data-seat="${seat}" data-gi="${gi}" ${canWork?`onclick="meldClick(${seat},${gi})" title="${isPair?'Çiftteki okeyi aynı taşla değiştir':'Seçili taşı bu pere işle'}"`:''}>${g.map(tid=>tileHTML(room.allTilesById[tid],{mini:true})).join('')}${undo?`<button class="meld-x" onclick="event.stopPropagation(); takeBackMeld(${gi})" aria-label="Bu peri ıstakaya geri al" title="Bu peri ıstakaya geri al">✕</button>`:''}</div>`;
       (isPair?pairs:runs).push(html);
     });
   });
   return `<div class="melds-area">
     <div class="mz mz-runs">${runs.join('') || '<span class="mz-empty">Seri perler</span>'}</div>
-    <div class="mz mz-pairs">${pairs.join('') || '<span class="mz-empty">Çiftler</span>'}</div>
+    <div class="mz mz-pairs" onclick="pairZoneClick(event)" title="Seçili taşı eşiyle birlikte çift olarak işle">${pairs.join('') || '<span class="mz-empty">Çiftler</span>'}</div>
+  </div>`;
+}
+
+// Oyuncunun masaya açtığı perlerin anlık değeri
+function openedBadgeHTML(room, seat){
+  const info=room.opened && room.opened[seat]; if(!info) return '';
+  const v=openedSummaryValue(room, seat);
+  return info.mode==='pairs'
+    ? `<span class="open-badge pair" title="Masaya açtığı çift sayısı">${v} çift</span>`
+    : `<span class="open-badge" title="Masaya açtığı perlerin toplamı">Açtı ${v}</span>`;
+}
+
+// ---- Puan tablosu ----
+function openScoreboard(){ S.scoreboardOpen=true; S.sbRound=null; render(); }
+function closeScoreboard(){ S.scoreboardOpen=false; render(); }
+function selectSbRound(i){ S.sbRound=i; render(); }
+function renderScoreboard(){
+  const room=S.room; if(!room) return '';
+  const hist=room.history||[];
+  const players=room.players.slice().sort((a,b)=>a.seat-b.seat);
+  const sign=v=>`<span class="${v<=0?'delta-neg':'delta-pos'}">${v>0?'+':''}${v}</span>`;
+  const live = room.status==='playing' && (room.penalties||[]).length;
+  const liveRow = live ? `<tr class="sb-live"><td>El ${room.round||1} <small>(devam)</small></td>${players.map(p=>{ const v=(room.penalties||[]).filter(x=>x.seat===p.seat).reduce((a,x)=>a+x.amount,0); return `<td>${v?sign(v)+' <small>ceza</small>':'—'}</td>`; }).join('')}<td>—</td></tr>` : '';
+  const sel = S.sbRound===null||S.sbRound===undefined ? hist.length-1 : S.sbRound;
+  const roundsRows = hist.map((h,i)=>`<tr class="sb-row ${i===sel?'sel':''}" onclick="selectSbRound(${i})" title="Ayrıntıyı göster">
+      <td>El ${h.round}</td>${players.map(p=>`<td>${sign(h.rows[p.seat].delta+(h.rows[p.seat].manual||0))}</td>`).join('')}
+      <td>${h.winnerSeat===null?'<span class="muted">Deste bitti</span>':escapeHtml(seatName(room,h.winnerSeat))}</td></tr>`).join('');
+  const ranked = players.slice().sort((a,b)=>room.scores[a.seat]-room.scores[b.seat]);
+  let detail='';
+  const h=hist[sel];
+  if(h){
+    const sum=(items,cat)=>items.filter(x=>x.cat===cat).reduce((a,x)=>a+x.amount,0);
+    detail = `<h3 class="sb-h">El ${h.round} ayrıntısı</h3>
+    <div class="sb-scroll"><table class="scoreboard sb-detail">
+      <thead><tr><th>Oyuncu</th><th>Açılış</th><th>Kalan taş</th><th>Bitirme / bonus</th><th>Cezalar</th><th>Açamadı</th><th>Atıktan alma</th><th>Kalan taş puanı</th><th>Düzeltme</th><th>El toplamı</th></tr></thead>
+      <tbody>${players.map(p=>{ const r=h.rows[p.seat], it=r.items||[];
+        const op = r.opened ? (r.opened.mode==='pairs' ? r.opened.value+' çift' : 'Seri '+r.opened.value) : '<span class="muted">Açmadı</span>';
+        const pens = it.filter(x=>x.cat==='ceza');
+        return `<tr><td>${escapeHtml(p.name)}${p.seat===h.winnerSeat?' <span class="badge">Bitirdi</span>':''}</td>
+          <td>${op}</td><td>${p.seat===h.winnerSeat?'0':r.tiles+' taş'}</td>
+          <td>${sum(it,'bonus')?sign(sum(it,'bonus')):'—'}</td>
+          <td title="${escapeAttr(pens.map(x=>x.label+' '+x.amount).join(', '))}">${pens.length?sign(sum(it,'ceza'))+` <small>(${pens.length})</small>`:'—'}</td>
+          <td>${sum(it,'acamadi')?sign(sum(it,'acamadi')):'—'}</td>
+          <td>${sum(it,'alma')?sign(sum(it,'alma')):'—'}</td>
+          <td>${sum(it,'kalan')?sign(sum(it,'kalan')):'—'}</td>
+          <td>${r.manual?sign(r.manual):'—'}</td>
+          <td><b>${sign(r.delta+(r.manual||0))}</b></td></tr>`; }).join('')}</tbody>
+    </table></div>`;
+  }
+  return `<div class="modal-backdrop" onclick="if(event.target===this) closeScoreboard()">
+    <div class="modal sb-modal" role="dialog" aria-label="Puan tablosu">
+      <div class="sb-head"><h2>Puan Tablosu</h2><button class="icon-x" onclick="closeScoreboard()" aria-label="Kapat">✕</button></div>
+      <div class="sb-rank">${ranked.map((p,i)=>`<div class="sb-chip ${i===0?'lead':''}"><span class="sb-pos">${i+1}</span>${escapeHtml(p.name)}<b>${room.scores[p.seat]}</b></div>`).join('')}</div>
+      <div class="sb-scroll"><table class="scoreboard sb-rounds">
+        <thead><tr><th>El</th>${players.map(p=>`<th>${escapeHtml(p.name)}</th>`).join('')}<th>Bitiren</th></tr></thead>
+        <tbody>${roundsRows || ''}${liveRow}${(!hist.length && !live)?`<tr><td colspan="${players.length+2}" class="muted">Henüz biten el yok.</td></tr>`:''}</tbody>
+        <tfoot><tr><td>Toplam</td>${players.map(p=>`<td><b>${room.scores[p.seat]}</b></td>`).join('')}<td></td></tr></tfoot>
+      </table></div>
+      ${detail}
+      <p class="muted small" style="margin-top:10px;">Düşük puan iyidir. Bir ele tıklayarak ayrıntısını gör.</p>
+    </div>
   </div>`;
 }
 
@@ -204,7 +272,7 @@ function renderGame(){
     const id = S.rackSlots[idx];
     const t = id ? room.allTilesById[id] : null;
     const g = meldAt[idx];
-    return `<div class="slot ${g?'g':''} ${g&&g.pair?'gp':''} ${g&&g.start?'gs':''} ${g&&g.end?'ge':''}" data-idx="${idx}">${g&&g.start&&!g.pair?`<span class="gsum">${g.value}</span>`:''}${t ? tileHTML(t,{cls:'rk', selected:S.selectedTid===id, attrs:`onpointerdown="rackPointerDown(event,'${id}')"`}) : ''}</div>`;
+    return `<div class="slot ${g?'g':''} ${g&&g.pair?'gp':''} ${g&&g.start?'gs':''} ${g&&g.end?'ge':''}" data-idx="${idx}">${g&&g.start&&!g.pair?`<span class="gsum">${g.value}</span>`:''}${t ? tileHTML(t,{cls:'rk', selected:S.selectedTid===id, flipped:!!(S.flipped&&S.flipped[id]&&isOkey(t,room.okeyColor,room.okeyNumber)), attrs:`onpointerdown="rackPointerDown(event,'${id}')"`}) : ''}</div>`;
   };
   const shelvesHtml = Array.from({length:rackRows},(_,r)=>
     `<div class="shelf" style="grid-template-columns:repeat(${cols},minmax(0,1fr))">${Array.from({length:cols},(_,c)=>slotHTML(r*cols+c)).join('')}</div>`).join('');
@@ -225,7 +293,7 @@ function renderGame(){
     <div class="board-top">
       <div class="pill">Sıra: ${myTurn?'Sende!':escapeHtml(seatName(room, room.turnSeat))}</div>
       ${room.turnSeconds? `<div class="timer-bar"><div class="timer-fill" style="width:${timeLeftPct}%"></div></div>`:'<div class="muted small">Süre sınırı yok</div>'}
-      <div class="pill">Destede ${room.deck.length} taş</div>
+      <div class="row" style="gap:8px;"><button class="secondary sb-btn" onclick="openScoreboard()">Puan Tablosu</button><div class="pill">Destede ${room.deck.length} taş</div></div>
     </div>
 
     <div class="felt-table">
@@ -340,6 +408,7 @@ function renderRoundEnd(){
     <div class="divider"></div>
     <div class="row">
       ${isHost? `<button onclick="startNextRound()">Sonraki Eli Başlat</button>` : `<p class="muted small">Kurucu sonraki eli başlatabilir.</p>`}
+      <button class="secondary" onclick="openScoreboard()">Puan Tablosu</button>
       <button class="danger" onclick="endGame()">Oyunu Bitir</button>
     </div>
   </div>
@@ -352,7 +421,7 @@ function renderGameEnd(){
   return `
   <div class="brand"><span class="mark">Okey 101</span><span class="sub">Oyun bitti</span></div>
   <div class="card">
-    <h2>Final Sıralaması</h2>
+    <div class="row" style="justify-content:space-between;"><h2>Final Sıralaması</h2><button class="secondary" onclick="openScoreboard()">Puan Tablosu</button></div>
     <table class="scoreboard">
       <thead><tr><th>#</th><th>Oyuncu</th><th>Puan</th></tr></thead>
       <tbody>
@@ -409,7 +478,8 @@ function renderCloseModal(){
         ${S.groups.map((g,gi)=>`
           <div class="group-box">
             ${g.map(tid=>tileHTML(room.allTilesById[tid],{small:true})).join('')}
-            <button class="secondary" style="padding:4px 8px; font-size:11px;" onclick="disbandGroup(${gi})">Boz</button>
+            ${groupStatusHTML(g, isOpen && mode==='pairs')}
+            <button class="icon-x gx" onclick="disbandGroup(${gi})" aria-label="Grubu boz, taşları geri al" title="Grubu boz, taşları geri al">✕</button>
           </div>
         `).join('') || '<p class="muted small">Henüz grup yok.</p>'}
       ` : `
@@ -428,3 +498,13 @@ function renderCloseModal(){
   `;
 }
 
+
+function groupStatusHTML(g, pairMode){
+  const room=S.room;
+  if(pairMode){
+    const ok = g.length===2 && validatePairs(g.map(id=>room.allTilesById[id]), room.okeyColor, room.okeyNumber).valid;
+    return `<span class="gstat ${ok?'ok':'bad'}">${ok?'Çift':'Geçersiz çift'}</span>`;
+  }
+  const r=meldInfo(g, room);
+  return r.valid ? `<span class="gstat ok">${r.type==='run'?'Seri':'Set'} · ${r.value}</span>` : `<span class="gstat bad">${escapeHtml(meldErrorText(g, room))}</span>`;
+}

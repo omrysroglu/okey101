@@ -75,7 +75,7 @@ function rackMelds(room){
       for(let i=1;i<=n;i++){
         let b={cov:best[i-1].cov,val:best[i-1].val,prev:i-1,grp:false};
         for(let L=3;L<=Math.min(13,i);L++){
-          const res=validateGroup(ids.slice(i-L,i).map(id=>room.allTilesById[id]),oc,on);
+          const res=validateMeldOrdered(ids.slice(i-L,i).map(id=>room.allTilesById[id]),oc,on);
           if(!res.valid) continue;
           const cand={cov:best[i-L].cov+L,val:best[i-L].val+res.value,prev:i-L,grp:true,gval:res.value};
           if(cand.cov>b.cov || (cand.cov===b.cov && cand.val>b.val)) b=cand;
@@ -140,13 +140,14 @@ function clearOver(){ document.querySelectorAll('.slot.over,.mid.over,.meld.over
 // Taş masadaki bir pere işlenebiliyorsa, bırakılan noktaya en yakın uygun peri döndür
 function nearestWorkTarget(tid, x, y){
   const r=S.room, me=S.mySeat, mi=r && r.opened && r.opened[me];
-  if(!mi || mi.mode!=='groups' || !r.hands[me].includes(tid) || r.hands[me].length<2) return null;
+  if(!mi || !r.hands[me].includes(tid) || r.hands[me].length<2) return null;
   let best=null, bd=Infinity;
   document.querySelectorAll('.meld[data-seat]').forEach(el=>{
     const seat=parseInt(el.dataset.seat,10), gi=parseInt(el.dataset.gi,10);
-    const oi=r.opened[seat]; if(!oi || oi.mode!=='groups') return;
+    const oi=r.opened[seat]; if(!oi) return;
     const meld=r.table[seat] && r.table[seat][gi]; if(!meld) return;
-    if(!findSwapOkey(tid, meld, r) && !canExtendMeld(tid, meld, r)) return;
+    const ok = isPairMeld(r, seat, meld) ? !!findSwapOkeyPair(tid, meld, r) : (!!findSwapOkey(tid, meld, r) || canExtendMeld(tid, meld, r));
+    if(!ok) return;
     const b=el.getBoundingClientRect();
     const dx=Math.max(b.left-x,0,x-b.right), dy=Math.max(b.top-y,0,y-b.bottom), dist=Math.hypot(dx,dy);
     if(dist<bd){ bd=dist; best={seat, gi, el}; }
@@ -212,10 +213,12 @@ function dragMove(e){
   if(slot){ slot.classList.add('over'); return; }
   if(d.grp) return;
   const meldEl=t && t.closest ? t.closest('.meld[data-seat]') : null;
+  const pz=t && t.closest ? t.closest('.mz-pairs') : null;
+  if(pz && canDiscardNow() && S.room.opened && S.room.opened[S.mySeat] && canWorkPairs(S.room,S.mySeat) && findPairPartner(d.tid, S.room.hands[S.mySeat], S.room)){ pz.classList.add('over'); return; }
   if(meldEl && canDiscardNow()){ meldEl.classList.add('over'); return; }
   const mid=t && t.closest ? t.closest('.mid') : null;
   if(mid && canDiscardNow()){
-    const inRuns=t.closest('.mz-runs');   // yalnızca per alanına bırakılırsa işle; başka yer = at
+    const inRuns=t.closest('.mz');   // per/çift alanına bırakılırsa işle; başka yer = at
     const tgt=inRuns?nearestWorkTarget(d.tid, e.clientX, e.clientY):null;
     if(tgt) tgt.el.classList.add('over'); else mid.classList.add('over');
   }
@@ -234,6 +237,8 @@ async function dragEnd(e){
     }
     S.lastClick={tid:d.tid, t:now};
     S.selectedTid = (S.selectedTid===d.tid) ? null : d.tid;
+    const ct=S.room && S.room.allTilesById[d.tid];
+    if(ct && isOkey(ct, S.room.okeyColor, S.room.okeyNumber)){ S.flipped=S.flipped||{}; S.flipped[d.tid]=!S.flipped[d.tid]; }   // okey ters dönüp ayırt edilir
     render(); return;
   }
   const slot=target && target.closest ? target.closest('.slot') : null;
@@ -241,10 +246,15 @@ async function dragEnd(e){
   if(slot){ moveRackTile(d.tid, parseInt(slot.dataset.idx,10)); render(); return; }
   if(d.grp){ render(); return; }   // per ortaya atılamaz; yerine döner
   const meldEl=target && target.closest ? target.closest('.meld[data-seat]') : null;
+  const pairZone=target && target.closest ? target.closest('.mz-pairs') : null;
+  if(pairZone && canDiscardNow() && S.room.opened && S.room.opened[S.mySeat]){
+    if(meldEl){ const s=+meldEl.dataset.seat, g=+meldEl.dataset.gi; if(findSwapOkeyPair(d.tid, S.room.table[s][g], S.room)){ await meldClick(s,g,d.tid); return; } }
+    if(canWorkPairs(S.room, S.mySeat) && findPairPartner(d.tid, S.room.hands[S.mySeat], S.room)){ await workPair(d.tid); return; }
+  }
   if(meldEl && canDiscardNow()){ await meldClick(parseInt(meldEl.dataset.seat,10), parseInt(meldEl.dataset.gi,10), d.tid); return; }
   const mid=target && target.closest ? target.closest('.mid') : null;
   if(mid && canDiscardNow()){
-    const inRuns=target.closest('.mz-runs');
+    const inRuns=target.closest('.mz');
     const tgt=inRuns?nearestWorkTarget(d.tid, e.clientX, e.clientY):null;
     if(tgt){ await meldClick(tgt.seat, tgt.gi, d.tid); return; }
     S.selectedTid=null; await discardTile(d.tid); return;
